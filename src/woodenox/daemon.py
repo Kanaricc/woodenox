@@ -68,8 +68,17 @@ class Daemon:
             if str(project.get("name") or project.get("title") or "") == self.project_name
         ]
         if len(matches) != 1:
+            available = "\n".join(
+                "- "
+                + str(project.get("name") or project.get("title") or "（未命名）")
+                + " ("
+                + str(project.get("id") or project.get("projectId") or "无 ID")
+                + ")"
+                for project in projects
+            )
             raise RuntimeError(
-                f"清单名称必须精确匹配且唯一：{self.project_name!r}，匹配到 {len(matches)} 个"
+                f"清单名称必须精确匹配且唯一：{self.project_name!r}，匹配到 {len(matches)} 个。"
+                f"\n可用清单：\n{available or '（没有可用清单）'}"
             )
         project_id = matches[0].get("id") or matches[0].get("projectId")
         if not project_id:
