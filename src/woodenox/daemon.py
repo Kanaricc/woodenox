@@ -358,8 +358,12 @@ class Daemon:
         comments = await self.dida.comments(task)
         for comment in comments:
             comment_id = str(comment.get("id") or comment.get("commentId") or "")
-            content = str(comment.get("content") or comment.get("text") or "").strip()
-            if not comment_id or self.store.comment_processed(comment_id):
+            content = str(comment.get("title") or "").strip()
+            if (
+                not comment_id
+                or not content
+                or self.store.comment_processed(comment_id)
+            ):
                 continue
             self.store.mark_comment_processed(task.id, comment_id)
             if content.startswith("[woodenox]"):
