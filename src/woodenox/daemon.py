@@ -106,6 +106,19 @@ class Daemon:
 
     async def _handle_task(self, task: DidaTask) -> None:
         binding = self.store.get(task.id)
+        if binding and binding.state == TaskState.COMPLETED:
+            cwd = Path(binding.cwd)
+            if task.id not in self._runners:
+                self._create_runner(task.id, cwd, binding)
+            binding.state = TaskState.RUNNING
+            self.store.save(binding)
+            if not await self._handle_commands(task, binding):
+                await self._runners[task.id].submit(
+                    "这个滴答清单任务已被重新打开。请在之前的相同上下文中继续处理。",
+                    cwd,
+                )
+            return
+
         await self._handle_commands(task, binding)
         binding = self.store.get(task.id)
         if binding and binding.state == TaskState.ABANDONED:
@@ -156,14 +169,6 @@ class Daemon:
             binding.state = TaskState.RUNNING
             self.store.save(binding)
             return
-
-        if binding.state == TaskState.COMPLETED:
-            binding.state = TaskState.RUNNING
-            self.store.save(binding)
-            await self._runners[task.id].submit(
-                "这个滴答清单任务已被重新打开。请在之前的相同上下文中继续处理。",
-                cwd,
-            )
 
     def _create_runner(
         self, task_id: str, cwd: Path, binding: TaskBinding
@@ -346,7 +351,8 @@ class Daemon:
 
     async def _handle_commands(
         self, task: DidaTask, binding: TaskBinding | None
-    ) -> None:
+    ) -> bool:
+        submitted = False
         comments = await self.dida.comments(task)
         for comment in comments:
             comment_id = str(comment.get("id") or comment.get("commentId") or "")
@@ -385,5 +391,7 @@ class Daemon:
                     "用户在滴答清单任务中补充了一条评论：\n\n" + content,
                     Path(binding.cwd),
                 )
+                submitted = True
                 binding.state = TaskState.RUNNING
                 self.store.save(binding)
+        return submitted
