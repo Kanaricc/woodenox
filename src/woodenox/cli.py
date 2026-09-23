@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .daemon import Daemon
 from .dida import DidaClient
 from .store import Store
@@ -32,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    load_dotenv()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

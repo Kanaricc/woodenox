@@ -25,6 +25,7 @@ class DidaTask:
     description: str
     status: Any = None
     tags: list[str] = field(default_factory=list)
+    kind: str = "TEXT"
 
 
 @dataclass(slots=True)

@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "agent-client-protocol>=0.12.1",
+    "httpx2[socks]>=2.13.1",
     "mcp>=2.2.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.scripts]
