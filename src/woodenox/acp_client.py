@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from acp import PROTOCOL_VERSION, RequestError, spawn_agent_process
 from acp.schema import (
+    AgentCapabilities,
     AgentMessageChunk,
     AgentPlanContentUpdate,
     AgentPlanRemovedUpdate,
@@ -48,6 +50,8 @@ from acp.schema import (
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class EventSink(Protocol):
@@ -102,6 +106,7 @@ class AcpTaskRunner:
         self._plan: list[tuple[str, str]] = []
         self._pending_permissions: dict[str, asyncio.Future[str | None]] = {}
         self._permission_options: dict[str, list[PermissionOption]] = {}
+        self._agent_capabilities: AgentCapabilities | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name=f"acp:{self.task_id}")
@@ -155,22 +160,32 @@ class AcpTaskRunner:
                 self.agent_command[0],
                 *self.agent_command[1:],
                 env=os.environ,
+                transport_kwargs={"stderr": None},
             ) as (conn, _process):
                 self._conn = conn
-                await conn.initialize(
+                initialized = await conn.initialize(
                     protocol_version=PROTOCOL_VERSION,
                     client_capabilities=ClientCapabilities(),
                     client_info=Implementation(
                         name="woodenox", title="Woodenox", version="0.1.0"
                     ),
                 )
+                self._agent_capabilities = initialized.agent_capabilities
                 await self._open_session(conn)
                 while True:
                     job = await self._queue.get()
                     if job.new_session or job.cwd != self.cwd:
-                        if self.session_id:
-                            with contextlib.suppress(Exception):
-                                await conn.close_session(session_id=self.session_id)
+                        session_capabilities = (
+                            self._agent_capabilities.session_capabilities
+                            if self._agent_capabilities
+                            else None
+                        )
+                        if (
+                            self.session_id
+                            and session_capabilities
+                            and session_capabilities.close is not None
+                        ):
+                            await conn.close_session(session_id=self.session_id)
                         self.session_id = None
                         self.cwd = job.cwd
                         await self._open_session(conn)
@@ -179,7 +194,7 @@ class AcpTaskRunner:
                     try:
                         response = await conn.prompt(
                             session_id=self.session_id,
-                            prompt=[TextContentBlock(text=job.text)],
+                            prompt=[TextContentBlock(type="text", text=job.text)],
                         )
                     finally:
                         self._running_prompt = False
@@ -191,17 +206,30 @@ class AcpTaskRunner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self.sink.crashed(self.task_id, f"{type(exc).__name__}: {exc}")
+            LOGGER.exception("ACP Agent 任务失败：%s", self.task_id)
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, RequestError):
+                error += f" (code={exc.code}, data={exc.data!r})"
+            await self.sink.crashed(self.task_id, error)
 
     async def _open_session(self, conn: Any) -> None:
         if self.session_id:
-            try:
+            session_capabilities = (
+                self._agent_capabilities.session_capabilities
+                if self._agent_capabilities
+                else None
+            )
+            if session_capabilities and session_capabilities.resume is not None:
                 await conn.resume_session(
                     session_id=self.session_id, cwd=str(self.cwd), mcp_servers=[]
                 )
                 return
-            except Exception:
-                self.session_id = None
+            if self._agent_capabilities and self._agent_capabilities.load_session:
+                await conn.load_session(
+                    session_id=self.session_id, cwd=str(self.cwd), mcp_servers=[]
+                )
+                return
+            self.session_id = None
         session = await conn.new_session(cwd=str(self.cwd), mcp_servers=[])
         self.session_id = session.session_id
         await self.sink.session_created(self.task_id, self.session_id)
