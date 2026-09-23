@@ -687,7 +687,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.12.1" },
-    { name = "httpx2", extras = ["socks"], specifier = ">=2.13.1" },
+    { name = "httpx2", extras = ["socks"], specifier = ">=2.13" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
