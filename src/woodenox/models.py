@@ -1,19 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
-
-
-class TaskState(StrEnum):
-    DISCOVERED = "DISCOVERED"
-    RUNNING = "RUNNING"
-    REQUIRES_ACTION = "REQUIRES_ACTION"
-    INTERRUPTING = "INTERRUPTING"
-    FINALIZING = "FINALIZING"
-    COMPLETED = "COMPLETED"
-    ABANDONED = "ABANDONED"
 
 
 @dataclass(slots=True)
@@ -37,13 +26,9 @@ class TaskInput:
 @dataclass(slots=True)
 class TaskBinding:
     task_id: str
-    project_id: str
-    agent: str
     cwd: str
     session_id: str | None
-    state: TaskState
-    prompt: str
-    final_response: str
+    comment_cursor: str
 
 
 @dataclass(slots=True)

@@ -10,7 +10,7 @@ from acp.schema import PermissionOption
 
 from .acp_client import AcpTaskRunner
 from .dida import DidaClient
-from .models import DidaTask, TaskBinding, TaskState
+from .models import DidaTask, TaskBinding
 from .store import Store
 from .task_content import initial_prompt, parse_task, render_status
 
@@ -94,83 +94,58 @@ class Daemon:
                 LOGGER.exception("处理任务失败：%s", task.id)
 
         for task_id, runner in list(self._runners.items()):
-            binding = self.store.get(task_id)
-            if task_id not in undone_ids and binding and binding.state not in {
-                TaskState.COMPLETED,
-                TaskState.ABANDONED,
-            }:
-                await runner.cancel()
+            if task_id not in undone_ids:
+                self._runners.pop(task_id)
                 self._cancel_status_update(task_id)
-                binding.state = TaskState.COMPLETED
-                self.store.save(binding)
+                await runner.close()
 
     async def _handle_task(self, task: DidaTask) -> None:
-        binding = self.store.get(task.id)
-        if binding and binding.state == TaskState.COMPLETED:
-            LOGGER.info("重新开启任务：%s %s", task.id, task.title)
-            cwd = Path(binding.cwd)
-            if task.id not in self._runners:
-                self._create_runner(task.id, cwd, binding)
-            binding.state = TaskState.RUNNING
-            self.store.save(binding)
-            if not await self._handle_commands(task, binding):
-                await self._runners[task.id].submit(
-                    "这个滴答清单任务已被重新打开。请在之前的相同上下文中继续处理。",
-                    cwd,
-                )
+        if task.status == -1:
+            runner = self._runners.pop(task.id, None)
+            if runner:
+                await runner.close()
+            self._cancel_status_update(task.id)
+            self.store.delete(task.id)
             return
 
-        await self._handle_commands(task, binding)
         binding = self.store.get(task.id)
-        if binding and binding.state == TaskState.ABANDONED:
-            if task.status == -1:
-                return
-            binding.state = TaskState.DISCOVERED
-            binding.session_id = None
-            self.store.save(binding)
-            old = self._runners.pop(task.id, None)
-            if old:
-                await old.close()
-
-        if binding is None or not binding.cwd:
+        if binding is None:
             try:
                 task_input = parse_task(task)
             except ValueError as exc:
-                await self._abandon(task, str(exc), binding)
+                await self._abandon(task, str(exc))
                 return
 
             prompt = initial_prompt(task_input)
+            comments = await self.dida.comments(task)
+            comment_cursor = next(
+                (
+                    str(comment.get("id") or comment.get("commentId"))
+                    for comment in reversed(comments)
+                    if comment.get("id") or comment.get("commentId")
+                ),
+                "",
+            )
             binding = TaskBinding(
                 task_id=task.id,
-                project_id=task.project_id,
-                agent=self.agent_name,
                 cwd=str(task_input.cwd),
                 session_id=None,
-                state=TaskState.DISCOVERED,
-                prompt=prompt,
-                final_response="",
+                comment_cursor=comment_cursor,
             )
             self.store.save(binding)
             LOGGER.info("开启任务：%s %s", task.id, task.title)
             runner = self._create_runner(task.id, task_input.cwd, binding)
             await runner.submit(prompt, task_input.cwd)
-            binding.state = TaskState.RUNNING
-            self.store.save(binding)
             await self._write_status(task.id, "执行中", "任务已发送给 Agent", [])
             return
 
         cwd = Path(binding.cwd)
         if task.id not in self._runners:
             runner = self._create_runner(task.id, cwd, binding)
-            recovery = "调度器已恢复这个任务。请在原有上下文中继续处理。"
-            if binding.prompt:
-                recovery += f"\n\n创建 Agent 时的原始任务快照：\n\n{binding.prompt}"
-            if binding.final_response:
-                recovery += f"\n\n上一次最终回复：\n{binding.final_response}"
-            await runner.submit(recovery, cwd)
-            binding.state = TaskState.RUNNING
-            self.store.save(binding)
-            return
+            await runner.submit(
+                "调度器已恢复这个任务。请在原有上下文中继续处理。", cwd
+            )
+        await self._handle_commands(task, binding)
 
     def _create_runner(
         self, task_id: str, cwd: Path, binding: TaskBinding
@@ -201,9 +176,7 @@ class Daemon:
         binding = self.store.get(task_id)
         if binding is None:
             return None
-        binding.state = TaskState.REQUIRES_ACTION
-        self.store.save(binding)
-        task = await self.dida.get_task(task_id, binding.project_id)
+        task = await self.dida.get_task(task_id, self.project_id)
         choices = "\n".join(
             f"- {option.name}: `{option.option_id}` ({option.kind})" for option in options
         )
@@ -233,9 +206,7 @@ class Daemon:
             return
 
         self._cancel_status_update(task_id)
-        binding.state = TaskState.FINALIZING
-        self.store.save(binding)
-        task = await self.dida.get_task(task_id, binding.project_id)
+        task = await self.dida.get_task(task_id, self.project_id)
         final = final_response or "Agent 已结束，但没有返回文本回复。"
         await self.dida.add_comment(task, f"[woodenox][final]\n\n{final}")
         description = render_status(
@@ -246,21 +217,16 @@ class Daemon:
         )
         await self.dida.update_description(task, description)
         await self.dida.complete(task)
-        binding.state = TaskState.COMPLETED
-        binding.final_response = final
-        self.store.save(binding)
 
     async def crashed(self, task_id: str, error: str) -> None:
         binding = self.store.get(task_id)
-        if binding is None or binding.state == TaskState.ABANDONED:
+        if binding is None:
             return
         self._cancel_status_update(task_id)
-        task = await self.dida.get_task(task_id, binding.project_id)
-        await self._abandon(task, error, binding)
+        task = await self.dida.get_task(task_id, self.project_id)
+        await self._abandon(task, error)
 
-    async def _abandon(
-        self, task: DidaTask, error: str, binding: TaskBinding | None = None
-    ) -> None:
+    async def _abandon(self, task: DidaTask, error: str) -> None:
         description = render_status(
             task.description,
             state="已放弃",
@@ -273,19 +239,7 @@ class Daemon:
             "[woodenox][abandoned]\n\n"
             f"任务执行失败，不会自动重试。\n\n错误：{error}",
         )
-        if binding is None:
-            binding = TaskBinding(
-                task_id=task.id,
-                project_id=task.project_id,
-                agent=self.agent_name,
-                cwd="",
-                session_id=None,
-                state=TaskState.ABANDONED,
-                prompt="",
-                final_response="",
-            )
-        binding.state = TaskState.ABANDONED
-        self.store.save(binding)
+        self.store.delete(task.id)
 
     async def session_created(self, task_id: str, session_id: str) -> None:
         binding = self.store.get(task_id)
@@ -321,7 +275,7 @@ class Daemon:
             self._status_tasks.pop(task_id, None)
             return
         try:
-            task = await self.dida.get_task(task_id, binding.project_id)
+            task = await self.dida.get_task(task_id, self.project_id)
             description = render_status(
                 task.description,
                 state=state,
@@ -351,53 +305,41 @@ class Daemon:
         self._pending_status.pop(task_id, None)
         self._status_intervals.pop(task_id, None)
 
-    async def _handle_commands(
-        self, task: DidaTask, binding: TaskBinding | None
-    ) -> bool:
-        submitted = False
+    async def _handle_commands(self, task: DidaTask, binding: TaskBinding) -> None:
         comments = await self.dida.comments(task)
-        for comment in comments:
-            comment_id = str(comment.get("id") or comment.get("commentId") or "")
+        identified = [
+            (str(comment.get("id") or comment.get("commentId")), comment)
+            for comment in comments
+            if comment.get("id") or comment.get("commentId")
+        ]
+        start = 0
+        if binding.comment_cursor:
+            start = next(
+                index
+                for index, (comment_id, _) in enumerate(identified, start=1)
+                if comment_id == binding.comment_cursor
+            )
+
+        runner = self._runners[task.id]
+        for comment_id, comment in identified[start:]:
             content = str(comment.get("title") or "").strip()
-            if (
-                not comment_id
-                or not content
-                or self.store.comment_processed(comment_id)
-            ):
-                continue
-            self.store.mark_comment_processed(task.id, comment_id)
-            if content.startswith("[woodenox]"):
-                continue
-            approve = APPROVE_RE.match(content)
-            reject = REJECT_RE.match(content)
-            if approve and task.id in self._runners:
-                request_id, option_id = approve.groups()
-                runner = self._runners[task.id]
-                if option_id is None:
-                    option_id = runner.default_allow_option(request_id)
-                runner.resolve_permission(request_id, option_id)
-                if binding:
-                    binding.state = TaskState.RUNNING
-                    self.store.save(binding)
-            elif reject and task.id in self._runners:
-                runner = self._runners[task.id]
-                request_id = reject.group(1)
-                runner.resolve_permission(
-                    request_id, runner.default_reject_option(request_id)
-                )
-                if binding:
-                    binding.state = TaskState.RUNNING
-                    self.store.save(binding)
-            elif (
-                binding
-                and binding.state not in {TaskState.ABANDONED, TaskState.COMPLETED}
-                and task.id in self._runners
-            ):
-                await self._runners[task.id].submit(
-                    "用户在滴答清单任务中补充了一条评论：\n\n" + content,
-                    Path(binding.cwd),
-                )
-                submitted = True
-                binding.state = TaskState.RUNNING
-                self.store.save(binding)
-        return submitted
+            if content and not content.startswith("[woodenox]"):
+                approve = APPROVE_RE.match(content)
+                reject = REJECT_RE.match(content)
+                if approve:
+                    request_id, option_id = approve.groups()
+                    if option_id is None:
+                        option_id = runner.default_allow_option(request_id)
+                    runner.resolve_permission(request_id, option_id)
+                elif reject:
+                    request_id = reject.group(1)
+                    runner.resolve_permission(
+                        request_id, runner.default_reject_option(request_id)
+                    )
+                else:
+                    await runner.submit(
+                        "用户在滴答清单任务中补充了一条评论：\n\n" + content,
+                        Path(binding.cwd),
+                    )
+            binding.comment_cursor = comment_id
+            self.store.save(binding)

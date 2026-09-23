@@ -52,7 +52,7 @@ uv run woodenox run \
 其他参数：
 
 - `--poll-interval`：轮询间隔，默认 5 秒。
-- `--state-db`：SQLite 状态库，默认 `.woodenox/state.db`。
+- `--state-db`：ACP 会话绑定与评论游标数据库，默认 `.woodenox/state.db`。
 - `--dida-url`：滴答 MCP 地址，默认 `https://mcp.dida365.com`。
 - `--token-env`：Token 环境变量名，默认 `DIDA365_TOKEN`。
 
