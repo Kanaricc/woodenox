@@ -1,0 +1,17 @@
+[project]
+name = "woodenox"
+version = "0.1.0"
+description = "Run ACP agents from Dida365 tasks"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-client-protocol>=0.12.1",
+    "mcp>=2.2.0",
+]
+
+[project.scripts]
+woodenox = "woodenox.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
