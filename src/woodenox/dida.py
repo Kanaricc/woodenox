@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Iterable
 from contextlib import AsyncExitStack
 from typing import Any
@@ -11,6 +12,8 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from .models import DidaTask
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DidaClient:
@@ -77,6 +80,7 @@ class DidaClient:
 
     async def update_description(self, task: DidaTask, description: str) -> None:
         description_field = "desc" if task.kind == "CHECKLIST" else "content"
+        LOGGER.info("更新任务描述：%s %s\n%s", task.id, task.title, description)
         await self._call(
             "update_task",
             {
@@ -92,6 +96,7 @@ class DidaClient:
         )
 
     async def add_comment(self, task: DidaTask, content: str) -> None:
+        LOGGER.info("更新任务评论：%s %s\n%s", task.id, task.title, content)
         await self._call(
             "add_comment",
             {
@@ -114,6 +119,7 @@ class DidaClient:
 
     async def abandon(self, task: DidaTask, description: str) -> None:
         description_field = "desc" if task.kind == "CHECKLIST" else "content"
+        LOGGER.info("更新任务描述并放弃任务：%s %s\n%s", task.id, task.title, description)
         await self._call(
             "update_task",
             {

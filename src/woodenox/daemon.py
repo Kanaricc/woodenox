@@ -107,6 +107,7 @@ class Daemon:
     async def _handle_task(self, task: DidaTask) -> None:
         binding = self.store.get(task.id)
         if binding and binding.state == TaskState.COMPLETED:
+            LOGGER.info("重新开启任务：%s %s", task.id, task.title)
             cwd = Path(binding.cwd)
             if task.id not in self._runners:
                 self._create_runner(task.id, cwd, binding)
@@ -150,6 +151,7 @@ class Daemon:
                 final_response="",
             )
             self.store.save(binding)
+            LOGGER.info("开启任务：%s %s", task.id, task.title)
             runner = self._create_runner(task.id, task_input.cwd, binding)
             await runner.submit(prompt, task_input.cwd)
             binding.state = TaskState.RUNNING

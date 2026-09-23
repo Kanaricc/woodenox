@@ -192,6 +192,13 @@ class AcpTaskRunner:
                     self._agent_messages.clear()
                     self._running_prompt = True
                     try:
+                        LOGGER.info(
+                            "发送 prompt：task_id=%s session_id=%s cwd=%s\n%s",
+                            self.task_id,
+                            self.session_id,
+                            job.cwd,
+                            job.text,
+                        )
                         response = await conn.prompt(
                             session_id=self.session_id,
                             prompt=[TextContentBlock(type="text", text=job.text)],
