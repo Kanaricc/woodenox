@@ -14,7 +14,6 @@ class TaskState(StrEnum):
     FINALIZING = "FINALIZING"
     COMPLETED = "COMPLETED"
     ABANDONED = "ABANDONED"
-    INVALID = "INVALID"
 
 
 @dataclass(slots=True)

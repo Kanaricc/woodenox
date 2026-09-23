@@ -19,7 +19,6 @@ FIRST_STATUS_INTERVAL = 2 * 60
 MAX_STATUS_INTERVAL = 256 * 60
 APPROVE_RE = re.compile(r"^woodenox\s+approve\s+(\S+)(?:\s+(\S+))?\s*$", re.I)
 REJECT_RE = re.compile(r"^woodenox\s+reject\s+(\S+)\s*$", re.I)
-RETRY_RE = re.compile(r"^woodenox\s+retry\s*$", re.I)
 
 
 class Daemon:
@@ -110,14 +109,20 @@ class Daemon:
         await self._handle_commands(task, binding)
         binding = self.store.get(task.id)
         if binding and binding.state == TaskState.ABANDONED:
-            return
+            if task.status == -1:
+                return
+            binding.state = TaskState.DISCOVERED
+            binding.session_id = None
+            self.store.save(binding)
+            old = self._runners.pop(task.id, None)
+            if old:
+                await old.close()
 
-        if binding is None or binding.state == TaskState.INVALID:
+        if binding is None or not binding.cwd:
             try:
                 task_input = parse_task(task)
             except ValueError as exc:
-                if binding is None or binding.state != TaskState.INVALID:
-                    await self._mark_invalid(task, str(exc))
+                await self._abandon(task, str(exc), binding)
                 return
 
             prompt = initial_prompt(task_input)
@@ -244,6 +249,11 @@ class Daemon:
             return
         self._cancel_status_update(task_id)
         task = await self.dida.get_task(task_id, binding.project_id)
+        await self._abandon(task, error, binding)
+
+    async def _abandon(
+        self, task: DidaTask, error: str, binding: TaskBinding | None = None
+    ) -> None:
         description = render_status(
             task.description,
             state="已放弃",
@@ -254,9 +264,19 @@ class Daemon:
         await self.dida.add_comment(
             task,
             "[woodenox][abandoned]\n\n"
-            f"Agent 已失败，任务不会自动重试。\n\n错误：{error}\n\n"
-            "如需重新执行，请评论：`woodenox retry`",
+            f"任务执行失败，不会自动重试。\n\n错误：{error}",
         )
+        if binding is None:
+            binding = TaskBinding(
+                task_id=task.id,
+                project_id=task.project_id,
+                agent=self.agent_name,
+                cwd="",
+                session_id=None,
+                state=TaskState.ABANDONED,
+                prompt="",
+                final_response="",
+            )
         binding.state = TaskState.ABANDONED
         self.store.save(binding)
 
@@ -356,13 +376,6 @@ class Daemon:
                 if binding:
                     binding.state = TaskState.RUNNING
                     self.store.save(binding)
-            elif RETRY_RE.match(content) and binding and binding.state == TaskState.ABANDONED:
-                binding.state = TaskState.DISCOVERED
-                binding.session_id = None
-                self.store.save(binding)
-                old = self._runners.pop(task.id, None)
-                if old:
-                    await old.close()
             elif (
                 binding
                 and binding.state not in {TaskState.ABANDONED, TaskState.COMPLETED}
@@ -374,30 +387,3 @@ class Daemon:
                 )
                 binding.state = TaskState.RUNNING
                 self.store.save(binding)
-
-    async def _mark_invalid(self, task: DidaTask, error: str) -> None:
-        description = render_status(
-            task.description,
-            state="配置无效",
-            agent=self.agent_name,
-            detail=error,
-        )
-        await self.dida.update_description(task, description)
-        await self.dida.add_comment(
-            task,
-            "[woodenox][invalid-cwd]\n\n"
-            f"{error}\n\n请在任务描述中加入：\n\n"
-            '```woodenox\ncwd = "/absolute/path"\n```',
-        )
-        self.store.save(
-            TaskBinding(
-                task_id=task.id,
-                project_id=task.project_id,
-                agent=self.agent_name,
-                cwd="",
-                session_id=None,
-                state=TaskState.INVALID,
-                prompt="",
-                final_response="",
-            )
-        )
